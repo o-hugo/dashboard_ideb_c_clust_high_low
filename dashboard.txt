@@ -1,0 +1,325 @@
+# Step 1: Install necessary libraries (ensure dash-bootstrap-components is included)
+# !pip install dash pandas geopandas folium branca dash-bootstrap-components --quiet # jupyter-dash is deprecated
+
+# Step 2: Import libraries
+import dash
+from dash import Dash, dcc, html, dash_table, Input, Output, State # Use Dash directly
+import dash_bootstrap_components as dbc # Import Dash Bootstrap Components
+import pandas as pd
+import geopandas as gpd
+import folium
+from branca.colormap import linear
+import sys
+import io
+
+# --- Configuration & File Paths ---
+IDEB_FILE_PATH = "ideb_escola_2021.txt"
+MUNICIPIOS_GEOJSON_PATH = "municipios_br_2020.geojson"
+ESTADOS_GEOJSON_PATH = "estados_br_2020.geojson"
+
+# --- Adjusted GeoJSON column names based on your feedback ---
+GEOJSON_MUN_CODE_COL = 'code_muni'
+GEOJSON_MUN_NAME_COL = 'name_muni'
+GEOJSON_STATE_ABBR_COL_MUN = 'abbrev_state'
+GEOJSON_STATE_ABBR_COL_EST = 'abbrev_state'
+
+# --- 1. Data Loading and Initial Preparation (เหมือนเดิม) ---
+print("Starting data loading process...")
+try:
+    try:
+        ideb_df = pd.read_csv(IDEB_FILE_PATH, delimiter='\t', encoding='utf-8')
+    except UnicodeDecodeError:
+        print("UTF-8 decoding failed, trying latin-1 for IDEB file...")
+        ideb_df = pd.read_csv(IDEB_FILE_PATH, delimiter='\t', encoding='latin1')
+    print(f"IDEB data loaded. Shape: {ideb_df.shape}")
+except FileNotFoundError:
+    print(f"ERROR: '{IDEB_FILE_PATH}' not found.")
+    sys.exit()
+except Exception as e:
+    print(f"Error loading IDEB data: {e}")
+    sys.exit()
+
+try:
+    municipios_gdf = gpd.read_file(MUNICIPIOS_GEOJSON_PATH)
+    print(f"Municipalities GDF loaded. Shape: {municipios_gdf.shape}")
+    estados_gdf = gpd.read_file(ESTADOS_GEOJSON_PATH)
+    print(f"States GDF loaded. Shape: {estados_gdf.shape}")
+except FileNotFoundError:
+    print("ERROR: GeoJSON file(s) not found.")
+    sys.exit()
+except Exception as e:
+    print(f"Error loading GeoJSON data: {e}")
+    sys.exit()
+
+# --- Data Cleaning and Preprocessing (เหมือนเดิม, com as colunas ajustadas) ---
+print("Starting data cleaning and preprocessing...")
+if 'ideb' in ideb_df.columns:
+    ideb_df['ideb'] = pd.to_numeric(ideb_df['ideb'], errors='coerce')
+    ideb_df.dropna(subset=['ideb'], inplace=True)
+    ideb_df = ideb_df[ideb_df['ideb'] != 0].copy()
+else:
+    print("CRITICAL ERROR: 'ideb' column not found.")
+    sys.exit()
+
+ideb_essential_cols = ['UF', 'cod_mun', 'nota_matem', 'nota_portugues', 'ideb']
+for col in ideb_essential_cols:
+    if col not in ideb_df.columns:
+        print(f"CRITICAL ERROR: Column '{col}' not found in IDEB data.")
+        sys.exit()
+    if col in ['nota_matem', 'nota_portugues', 'ideb']:
+        ideb_df[col] = pd.to_numeric(ideb_df[col], errors='coerce')
+ideb_df.dropna(subset=['nota_matem', 'nota_portugues', 'ideb'], inplace=True)
+
+# Validate adjusted GeoJSON columns (já ajustados acima)
+# ... (validações de colunas podem ser mantidas para robustez)
+
+try:
+    ideb_df['cod_mun_int'] = pd.to_numeric(ideb_df['cod_mun'], errors='coerce').astype('Int64')
+    municipios_gdf[GEOJSON_MUN_CODE_COL + '_int'] = pd.to_numeric(municipios_gdf[GEOJSON_MUN_CODE_COL], errors='coerce').astype('Int64')
+    ideb_df.dropna(subset=['cod_mun_int'], inplace=True)
+    municipios_gdf.dropna(subset=[GEOJSON_MUN_CODE_COL + '_int'], inplace=True)
+except Exception as e:
+    print(f"Error converting mun codes: {e}")
+    sys.exit()
+
+if municipios_gdf.crs != "EPSG:4326":
+    municipios_gdf = municipios_gdf.to_crs("EPSG:4326")
+if estados_gdf.crs != "EPSG:4326":
+    estados_gdf = estados_gdf.to_crs("EPSG:4326")
+
+abrev_estados = sorted(list(estados_gdf[GEOJSON_STATE_ABBR_COL_EST].unique()))
+if not abrev_estados:
+    print("CRITICAL ERROR: No states found for dropdown.")
+    sys.exit()
+print("Data cleaning and preprocessing finished.")
+
+# --- Dash App Initialization with Dark Theme ---
+# Popular dark themes: dbc.themes.CYBORG, dbc.themes.DARKLY, dbc.themes.VAPOR
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
+server = app.server # For Gunicorn deployment (good practice)
+
+# --- App Layout using Dash Bootstrap Components ---
+app.layout = dbc.Container(
+    fluid=True, # Usa a largura total da viewport
+    className="dbc dbc-dark", # Aplica classes de tema escuro ao container se necessário
+    style={'padding': '15px'}, # Adiciona um pouco de padding geral
+    children=[
+        # Linha 1: Título
+        dbc.Row(
+            dbc.Col(
+                html.H1("Painel IDEB Brasil", className="text-center display-4 mb-4", style={'color': '#66D9EF'}),
+            )
+        ),
+
+        # Linha 2: Seletor de Estado (centralizado)
+        dbc.Row(
+            dbc.Col(
+                [
+                    html.Label("Selecione um Estado:", className="mb-2"), # mb-2 para margem inferior pequena
+                    dcc.Dropdown(
+                        id='estado-dropdown',
+                        options=[{'label': estado, 'value': estado} for estado in abrev_estados],
+                        value=abrev_estados[0],
+                        clearable=False,
+                        # O tema DBC deve estilizar o dropdown. Se precisar de ajuste fino:
+                        # style={'color': '#333'} # Cor do texto dentro do dropdown
+                    )
+                ],
+                width={'size': 6, 'offset': 3}, # Coluna de largura 6, deslocada por 3 para centralizar
+                md={'size': 4, 'offset': 4} # Em telas médias, largura 4, deslocada por 4
+            ),
+            className="mb-4" # Margem inferior para a linha
+        ),
+
+        # Linha 3: Tabela e Mapas
+        dbc.Row(
+            [
+                # Coluna 1: Tabela de Dados (largura menor, à esquerda)
+                dbc.Col(
+                    [
+                        html.H4("Notas Médias por Município", className="mb-3", style={'color': '#A6E22E'}),
+                        dash_table.DataTable(
+                            id='ideb-table',
+                            page_size=10, # Mostrar no máximo 10 linhas
+                            style_table={
+                                'overflowY': 'auto', # Adicionar scroll vertical
+                                'maxHeight': '560px', # Altura máxima antes do scroll
+                                'minHeight': '560px' # Altura mínima
+                            },
+                            # Estilos para tema escuro (DBC pode não estilizar DataTable profundamente)
+                            style_header={
+                                'backgroundColor': 'rgb(30, 30, 30)', # Um pouco mais escuro que a célula
+                                'color': 'white',
+                                'fontWeight': 'bold',
+                                'border': '1px solid rgb(50,50,50)'
+                            },
+                            style_cell={
+                                'backgroundColor': 'rgb(50, 50, 50)',
+                                'color': 'white',
+                                'textAlign': 'left',
+                                'padding': '10px',
+                                'minWidth': '80px', 'width': '120px', 'maxWidth': '180px',
+                                'border': '1px solid rgb(70,70,70)',
+                                'whiteSpace': 'normal', # Permite quebra de linha
+                                'height': 'auto'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': 'rgb(40, 40, 40)' # Linhas ímpares um pouco diferentes
+                                }
+                            ]
+                        )
+                    ],
+                    xs=12, sm=12, md=5, lg=4, # Ocupa toda a largura em telas pequenas, depois 5/12 ou 4/12
+                    className="mb-4 mb-md-0" # Margem inferior em telas pequenas, removida em médias+
+                ),
+
+                # Coluna 2: Mapas (largura maior, à direita)
+                dbc.Col(
+                    [
+                        dcc.Tabs(
+                            id="map-tabs",
+                            value='tab-mat', # Aba padrão
+                            className="mb-3", # Margem para as abas
+                            children=[
+                                dcc.Tab(label='Matemática', value='tab-mat',
+                                        children=[html.Iframe(id='map-mat', width='100%', height='600px', style={'border': 'none', 'borderRadius': '4px'})]),
+                                dcc.Tab(label='Português', value='tab-por',
+                                        children=[html.Iframe(id='map-por', width='100%', height='600px', style={'border': 'none', 'borderRadius': '4px'})]),
+                                dcc.Tab(label='IDEB', value='tab-ideb',
+                                        children=[html.Iframe(id='map-ideb', width='100%', height='600px', style={'border': 'none', 'borderRadius': '4px'})])
+                            ]
+                        )
+                    ],
+                    xs=12, sm=12, md=7, lg=8 # Ocupa mais espaço que a tabela em telas médias+
+                )
+            ]
+        )
+    ]
+)
+
+# --- Helper function to create Folium maps (ajustar tiles para tema escuro) ---
+def create_folium_map(gdf_data, score_column_name, legend_name, selected_estado_geom, mun_name_col):
+    if selected_estado_geom is None or selected_estado_geom.is_empty:
+        map_center = [-14.2350, -51.9253]
+        m = folium.Map(location=map_center, zoom_start=3, tiles="CartoDB dark_matter", control_scale=True) # Tile escuro
+        folium.Marker(map_center, popup="Geometria do estado não disponível.").add_to(m)
+        return m._repr_html_()
+
+    map_center = [selected_estado_geom.centroid.y, selected_estado_geom.centroid.x]
+    # Usar tiles="CartoDB dark_matter" ou "Stamen Toner" para temas escuros
+    m = folium.Map(location=map_center, tiles="CartoDB dark_matter", control_scale=True)
+    try:
+        bounds = selected_estado_geom.bounds
+        m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    except Exception:
+        m.zoom_start = 6
+
+    if gdf_data.empty or score_column_name not in gdf_data.columns or gdf_data[score_column_name].isnull().all():
+        if not selected_estado_geom.is_empty:
+             folium.GeoJson(selected_estado_geom, style_function=lambda x: {'fillColor': '#444', 'color': '#777', 'weight': 1}).add_to(m)
+        folium.Marker(
+            location=[selected_estado_geom.centroid.y, selected_estado_geom.centroid.x],
+            popup=f"Dados de '{legend_name}' não disponíveis.",
+            icon=folium.Icon(color='gray')
+        ).add_to(m)
+        return m._repr_html_()
+
+    gdf_data[score_column_name] = pd.to_numeric(gdf_data[score_column_name], errors='coerce')
+    valid_scores = gdf_data[score_column_name].dropna()
+
+    if valid_scores.empty:
+        min_val, max_val = 0, 1
+        colormap = linear.Greys_03.scale(min_val, max_val)
+    else:
+        min_val = valid_scores.min()
+        max_val = valid_scores.max()
+        if min_val == max_val:
+            colormap = linear.viridis.scale(min_val - (0.5 if min_val > 0 else 0), max_val + 0.5 if max_val > 0 else 1) # Ajuste para evitar range 0
+            if min_val == 0 and max_val == 0: colormap = linear.viridis.scale(0,1) # Caso específico 0-0
+        else:
+            colormap = linear.viridis.scale(min_val, max_val)
+    colormap.caption = legend_name
+
+    # Estilo do tooltip para melhor visibilidade em tema escuro
+    tooltip_style = "background-color: #2a2a2a; color: #f0f0f0; border: 1px solid #555; padding: 8px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.5);"
+
+    folium.GeoJson(
+        gdf_data,
+        name=legend_name,
+        style_function=lambda feature: {
+            'fillColor': colormap(feature['properties'][score_column_name]) if pd.notnull(feature['properties'][score_column_name]) else '#333333', # Cor de preenchimento para NaNs
+            'color': '#888888', # Cor da borda dos polígonos
+            'weight': 0.7,
+            'fillOpacity': 0.75,
+        },
+        tooltip=folium.features.GeoJsonTooltip(
+            fields=[mun_name_col, score_column_name],
+            aliases=['Município:', f'{legend_name}:'],
+            localize=True, sticky=False, labels=True,
+            style=tooltip_style
+        ),
+        highlight_function=lambda x: {'weight': 2, 'fillOpacity': 0.9, 'color': '#00FFFF'} # Ciano para destaque
+    ).add_to(m)
+    
+    m.add_child(colormap)
+    # Adicionar controle de camadas se você quiser permitir que o usuário alterne os tiles do mapa, por exemplo
+    # folium.TileLayer('cartodbpositron', name='Mapa Claro').add_to(m)
+    # folium.LayerControl().add_to(m)
+    return m._repr_html_()
+
+# --- Callbacks (เหมือนเดิม, mas usando as colunas de GeoJSON corretas) ---
+@app.callback(
+    [Output('ideb-table', 'data'), Output('ideb-table', 'columns'),
+     Output('map-mat', 'srcDoc'), Output('map-por', 'srcDoc'), Output('map-ideb', 'srcDoc')],
+    [Input('estado-dropdown', 'value')]
+)
+def update_dashboard(selected_estado_abbrev):
+    if not selected_estado_abbrev:
+        empty_df_for_table = pd.DataFrame(columns=['Município', 'Média Mat.', 'Média Port.', 'Média IDEB'])
+        cols_for_table = [{"name": i, "id": i} for i in empty_df_for_table.columns]
+        # Ajustar a geometria para o mapa padrão
+        # Se estados_gdf for um GeoDataFrame válido e não vazio
+        default_geom = estados_gdf.unary_union if not estados_gdf.empty else None
+        default_map_html = create_folium_map(gpd.GeoDataFrame(), "", "Nenhum estado selecionado", default_geom, GEOJSON_MUN_NAME_COL)
+        return empty_df_for_table.to_dict('records'), cols_for_table, default_map_html, default_map_html, default_map_html
+
+    ideb_estado_df = ideb_df[ideb_df['UF'] == selected_estado_abbrev].copy()
+    media_mat = ideb_estado_df.groupby('cod_mun_int')['nota_matem'].mean().reset_index(name='media_mat')
+    media_por = ideb_estado_df.groupby('cod_mun_int')['nota_portugues'].mean().reset_index(name='media_por')
+    media_ideb_agg = ideb_estado_df.groupby('cod_mun_int')['ideb'].mean().reset_index(name='media_ideb')
+
+    notas_df = pd.merge(media_mat, media_por, on='cod_mun_int', how='outer')
+    notas_df = pd.merge(notas_df, media_ideb_agg, on='cod_mun_int', how='outer')
+
+    estado_municipios_gdf = municipios_gdf[municipios_gdf[GEOJSON_STATE_ABBR_COL_MUN] == selected_estado_abbrev].copy()
+    map_data_gdf = pd.merge(estado_municipios_gdf, notas_df, 
+                            left_on=GEOJSON_MUN_CODE_COL + '_int', 
+                            right_on='cod_mun_int', how='left')
+
+    table_display_df = map_data_gdf[[GEOJSON_MUN_NAME_COL, 'media_mat', 'media_por', 'media_ideb']].copy()
+    table_display_df.columns = ['Município', 'Média Mat.', 'Média Port.', 'Média IDEB']
+    for col_name in ['Média Mat.', 'Média Port.', 'Média IDEB']:
+        table_display_df[col_name] = pd.to_numeric(table_display_df[col_name], errors='coerce').round(2)
+    table_display_df.fillna('N/A', inplace=True)
+    
+    table_data = table_display_df.to_dict('records')
+    table_columns = [{"name": i, "id": i} for i in table_display_df.columns]
+
+    selected_estado_geom_series = estados_gdf[estados_gdf[GEOJSON_STATE_ABBR_COL_EST] == selected_estado_abbrev].geometry
+    selected_estado_geom = selected_estado_geom_series.iloc[0] if not selected_estado_geom_series.empty else None
+
+    map_mat_html = create_folium_map(map_data_gdf, 'media_mat', 'Média Matemática', selected_estado_geom, GEOJSON_MUN_NAME_COL)
+    map_por_html = create_folium_map(map_data_gdf, 'media_por', 'Média Português', selected_estado_geom, GEOJSON_MUN_NAME_COL)
+    map_ideb_html = create_folium_map(map_data_gdf, 'media_ideb', 'Média IDEB', selected_estado_geom, GEOJSON_MUN_NAME_COL)
+
+    return table_data, table_columns, map_mat_html, map_por_html, map_ideb_html
+
+# --- Run the App ---
+if __name__ == '__main__':
+    print("Starting Dash app...")
+    # Para rodar localmente no VSCode (ou similar):
+    app.run(debug=True, port=8051)
+    # Para rodar no Colab (se você voltar a usá-lo):
+    # app.run(jupyter_mode='inline', port=8050, debug=True, jupyter_height=1000)
