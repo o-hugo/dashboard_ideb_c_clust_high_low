@@ -1,30 +1,9 @@
 dash
+dash-bootstrap-components
 pandas
 geopandas
 folium
 branca
-dash-bootstrap-components==1.6.0 # Ou uma versão mais recente se preferir
 pysal
 scikit-learn
 gunicorn
-anyio
-Flask # Dependência do Dash
-Werkzeug # Dependência do Flask/Dash
-Jinja2 # Dependência do Flask/Dash
-itsdangerous # Dependência do Flask/Dash
-click # Dependência do Flask/Dash
-blinker # Dependência do Flask/Dash
-numpy
-shapely # Dependência do geopandas
-pyproj # Dependência do geopandas
-fiona # Dependência do geopandas
-rtree # Opcional, mas útil para geopandas
-requests
-certifi
-charset-normalizer
-idna
-urllib3
-MarkupSafe # Dependência do Jinja2
-plotly # Usado pelo Dash para gráficos
-tenacity # Dependência do plotly
-packaging # Dependência de várias bibliotecas
