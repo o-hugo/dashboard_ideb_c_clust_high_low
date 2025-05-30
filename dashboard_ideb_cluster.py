@@ -499,6 +499,8 @@ def update_dashboard(selected_estado_abbrev):
 # --- Run the App ---
 if __name__ == '__main__':
     print("Starting Dash app...")
-    app.run(debug=True, port=8052) # [cite: 43]
+    app.run(debug=True, port=8053) # [cite: 43]
 
 
+
+# %%
